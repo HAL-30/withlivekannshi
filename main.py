@@ -15,6 +15,7 @@ except Exception:
 
 # ========== Flaskサーバー ==========
 app = Flask(__name__)
+monitor_instance = None  # グローバル参照用
 
 @app.route('/')
 def home():
@@ -23,6 +24,37 @@ def home():
 @app.route('/health')
 def health():
     return "OK", 200
+
+@app.route('/test')
+def test_notification():
+    """テスト通知を送信するエンドポイント"""
+    global monitor_instance
+    if monitor_instance is None:
+        return "Monitor not initialized", 500
+    
+    # ダミーの枠データでテスト通知を送信
+    test_slots = [
+        {
+            'id': 'test_001',
+            'date': datetime.now(JST).strftime('%Y%m%d'),
+            'time': '12:00:00',
+            'points': '3000',
+            'start_day': datetime.now(JST).strftime('%m/%d'),
+        },
+        {
+            'id': 'test_002',
+            'date': datetime.now(JST).strftime('%Y%m%d'),
+            'time': '15:30:00',
+            'points': '5000',
+            'start_day': datetime.now(JST).strftime('%m/%d'),
+        }
+    ]
+    
+    try:
+        monitor_instance.send_discord_notification(test_slots)
+        return "✅ テスト通知を送信しました！Discordを確認してください。", 200
+    except Exception as e:
+        return f"❌ エラー: {e}", 500
 
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
@@ -271,4 +303,5 @@ if __name__ == "__main__":
     web_thread.daemon = True
     web_thread.start()
     monitor = WithLiveMonitor(config)
+    monitor_instance = monitor  # グローバル参照を設定
     monitor.run()
