@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: withlive-monitor
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: CAST_ID
+        sync: false
+      - key: ARTIST_NAME
+        sync: false
+      - key: CHECK_INTERVAL
+        value: 60
+      - key: DAYS_AHEAD
+        value: 2
