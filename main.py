@@ -184,8 +184,8 @@ class WithLiveMonitor:
         if not new_slots:
             return
         embed = {
-            "title": "🎉 電話枠が追加されました！",
-            "description": f"**{self.config['artist_name']}**",
+            "title": "🎉 電話がきたよ！",
+            "description": f"\n**{self.config['artist_name']}**\n",
             "color": 0x00ff00,
             "fields": [],
             "timestamp": datetime.utcnow().isoformat(),
@@ -197,15 +197,15 @@ class WithLiveMonitor:
             time_display = slot.get('time', '')
             embed["fields"].append({
                 "name": f"📅 {date_display} {time_display}",
-                "value": f"💰 {slot['points']}pt",
+                "value": f"💰 {slot['points']}pt\n",
                 "inline": True
             })
         embed["fields"].append({
-            "name": "📱 今すぐ予約",
-            "value": f"[予約ページを開く](https://www.withlive.jp/cast.php?id={self.config['cast_id']})",
+            "name": "\u200b",
+            "value": f"📱 [今すぐ予約する](https://www.withlive.jp/cast.php?id={self.config['cast_id']})",
             "inline": False
         })
-        payload = {"content": "@everyone 電話枠追加！", "embeds": [embed]}
+        payload = {"content": "みおちゃんから着信がありました！", "embeds": [embed]}
         try:
             resp = requests.post(self.config['discord_webhook_url'], json=payload, timeout=10)
             resp.raise_for_status()
