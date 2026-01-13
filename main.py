@@ -1,6 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
-import re
 import time
 import os
 import sys
@@ -48,6 +46,8 @@ def validate_config(config):
 
 # ========== 監視クラス ==========
 class WithLiveMonitor:
+    API_BASE = "https://production-api.withlive.co.uk/v1"
+
     def __init__(self, config):
         self.config = config
         self.previous_slots = set()
@@ -71,49 +71,33 @@ class WithLiveMonitor:
         return dates
 
     def fetch_slots_for_date(self, date_str):
-        url = f"https://www.withlive.jp/live.html?date={date_str}&cast_id={self.config['cast_id']}&is_web=true"
+        """APIから指定日の枠情報を取得"""
+        url = f"{self.API_BASE}/talk/cast/{self.config['cast_id']}?status=progress_draft&date={date_str}&is_web=true"
         try:
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            html = response.text
+            data = response.json()
 
-            if "予約可能な枠がありません" in html:
-                return [], True
-
-            slots = self.parse_slots(html, date_str)
-
-            if (not slots) and ("buyLive(" not in html):
-                return None, False
+            # APIレスポンスからslot情報を抽出
+            result = data.get('result', [])
+            slots = []
+            for item in result:
+                slot = {
+                    'id': str(item.get('talk_id', '')),
+                    'date': date_str,
+                    'time': item.get('start_time', ''),
+                    'points': str(item.get('point', item.get('current_price', 0))),
+                    'start_day': item.get('start_day', ''),
+                    'type': item.get('type', 1),  # 1=通常予約, 0=オークション
+                    'is_published': item.get('is_published', 1),
+                }
+                slots.append(slot)
 
             return slots, True
 
         except Exception as e:
             self.log(f"❌ 取得エラー ({date_str}): {e}")
             return None, False
-
-    def parse_slots(self, html, date_str):
-        slots = []
-        pattern = r'buyLive\((\d+),(\d+),(\d+),(\d+),(\d+)\)'
-        matches = re.findall(pattern, html)
-        soup = BeautifulSoup(html, 'html.parser')
-        time_elements = soup.select('.is-size-4.has-text-weight-bold')
-
-        for i, match in enumerate(matches):
-            slot_id = match[0]
-            points = match[2]
-            time_str = ""
-            if i < len(time_elements):
-                time_text = time_elements[i].get_text()
-                time_match = re.search(r'(\d{1,2}:\d{2}:\d{2})', time_text)
-                if time_match:
-                    time_str = time_match.group(1)
-            slots.append({
-                'id': slot_id,
-                'date': date_str,
-                'time': time_str,
-                'points': points,
-            })
-        return slots
 
     def fetch_all_slots(self):
         dates = self.get_check_dates(self.config.get('days_ahead', 2))
@@ -133,9 +117,9 @@ class WithLiveMonitor:
     def detect_new_slots_and_update(self, current_slots, ok_all):
         if not ok_all:
             self.consecutive_failures += 1
-            self.log(f"⚠️ 取得失敗/解析不能が含まれるため、状態更新をスキップ (連続{self.consecutive_failures}回)")
+            self.log(f"⚠️ 取得失敗が含まれるため、状態更新をスキップ (連続{self.consecutive_failures}回)")
             if self.consecutive_failures == 10:
-                self.send_error_notification("取得失敗/解析不能が10回連続しています。ブロックやページ構造変更の可能性があります。")
+                self.send_error_notification("取得失敗が10回連続しています。APIの変更やブロックの可能性があります。")
             return []
 
         self.consecutive_failures = 0
@@ -176,9 +160,11 @@ class WithLiveMonitor:
             "footer": {"text": "WithLIVE Monitor"}
         }
         for slot in new_slots[:10]:
-            date_formatted = self.format_date(slot['date'])
+            # start_dayがあればそれを使用、なければdate_strからフォーマット
+            date_display = slot.get('start_day') or self.format_date(slot['date'])
+            time_display = slot.get('time', '')
             embed["fields"].append({
-                "name": f"📅 {date_formatted} {slot['time']}",
+                "name": f"📅 {date_display} {time_display}",
                 "value": f"💰 {slot['points']}pt",
                 "inline": True
             })
