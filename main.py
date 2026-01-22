@@ -193,6 +193,20 @@ class WithLiveMonitor:
         except Exception:
             return date_str
 
+    def format_time(self, time_str):
+        """start_timeから時刻部分のみを抽出してJSTに変換"""
+        try:
+            # "2026-01-18 16:50:00" 形式の場合
+            if ' ' in time_str:
+                dt_utc = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+                # UTCからJSTに変換（+9時間）
+                dt_jst = dt_utc + timedelta(hours=9)
+                return dt_jst.strftime('%H:%M:%S')
+            # すでに "01:50:00" 形式の場合はそのまま
+            return time_str
+        except Exception:
+            return time_str
+
     def send_discord_notification(self, artist, new_slots):
         if not new_slots:
             return
@@ -206,7 +220,7 @@ class WithLiveMonitor:
         }
         for slot in new_slots[:10]:
             date_display = slot.get('start_day') or self.format_date(slot['date'])
-            time_display = slot.get('time', '')
+            time_display = self.format_time(slot.get('time', ''))
             embed["fields"].append({
                 "name": f"📅 {date_display} {time_display}",
                 "value": f"💰 {slot['points']}pt\n",
