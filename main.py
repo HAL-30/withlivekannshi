@@ -34,20 +34,23 @@ def test_notification():
     
     # 優先アーティストでテスト通知を送信
     artist = monitor_instance.priority_artist
+    now = datetime.now(JST)
     test_slots = [
         {
             'id': 'test_001',
-            'date': datetime.now(JST).strftime('%Y%m%d'),
+            'date': now.strftime('%Y%m%d'),
             'time': '12:00:00',
-            'points': '3000',
-            'start_day': datetime.now(JST).strftime('%m/%d'),
+            'points': '1000',
+            'start_day': f"{now.month}月{now.day}日",
+            'duration': '2',
         },
         {
             'id': 'test_002',
-            'date': datetime.now(JST).strftime('%Y%m%d'),
+            'date': now.strftime('%Y%m%d'),
             'time': '15:30:00',
-            'points': '5000',
-            'start_day': datetime.now(JST).strftime('%m/%d'),
+            'points': '3000',
+            'start_day': f"{now.month}月{now.day}日",
+            'duration': '3',
         }
     ]
     
@@ -124,6 +127,7 @@ class WithLiveMonitor:
                     'time': item.get('start_time', ''),
                     'points': str(item.get('point', item.get('current_price', 0))),
                     'start_day': item.get('start_day', ''),
+                    'duration': str(item.get('duration', '')),
                     'type': item.get('type', 1),
                     'is_published': item.get('is_published', 1),
                 }
@@ -186,12 +190,26 @@ class WithLiveMonitor:
         return [by_id[sid] for sid in new_ids if sid in by_id]
 
     def format_date(self, date_str):
+        """日付を「1月19日」形式にフォーマット"""
         try:
             dt = datetime.strptime(date_str, '%Y%m%d')
-            weekdays = ['月', '火', '水', '木', '金', '土', '日']
-            return f"{dt.month}/{dt.day}({weekdays[dt.weekday()]})"
+            return f"{dt.month}月{dt.day}日"
         except Exception:
             return date_str
+    
+    def format_start_day(self, start_day):
+        """start_dayを「1月19日」形式に変換"""
+        if not start_day:
+            return ""
+        # "1/19(月)" → "1月19日" に変換
+        try:
+            if '/' in start_day and '(' in start_day:
+                date_part = start_day.split('(')[0]  # "1/19"
+                month, day = date_part.split('/')
+                return f"{month}月{day}日"
+            return start_day
+        except Exception:
+            return start_day
 
     def format_time(self, time_str):
         """start_timeから時刻部分のみを抽出してJSTに変換"""
@@ -212,23 +230,34 @@ class WithLiveMonitor:
             return
         embed = {
             "title": "🎉 電話がきたよ！",
-            "description": f"\n**{artist['name']}**\n",
+            "description": f"**{artist['name']}**",
             "color": 0x00ff00,
             "fields": [],
             "timestamp": datetime.utcnow().isoformat(),
             "footer": {"text": "WithLIVE Monitor"}
         }
         for slot in new_slots[:10]:
-            date_display = slot.get('start_day') or self.format_date(slot['date'])
+            start_day = slot.get('start_day', '')
+            date_display = self.format_start_day(start_day) if start_day else self.format_date(slot['date'])
             time_display = self.format_time(slot.get('time', ''))
+            duration = slot.get('duration', '')
+            duration_text = f" 〜 {duration}分" if duration else ""
+            
+            # 日付（小さめ）
             embed["fields"].append({
-                "name": f"📅 {date_display} {time_display}",
-                "value": f"💰 {slot['points']}pt\n",
-                "inline": True
+                "name": f"📅 {date_display}",
+                "value": f"**{time_display}{duration_text}**",
+                "inline": False
+            })
+            # ポイント（H2・太字）
+            embed["fields"].append({
+                "name": f"💰 {slot['points']}pt",
+                "value": "━━━━━━━━━━━━━━━",
+                "inline": False
             })
         embed["fields"].append({
-            "name": "\u200b",
-            "value": f"📱 [今すぐ予約する](https://www.withlive.jp/cast.php?id={artist['cast_id']})",
+            "name": "📱 今すぐ予約する",
+            "value": f"[WithLIVEで予約](https://www.withlive.jp/cast.php?id={artist['cast_id']})",
             "inline": False
         })
         
