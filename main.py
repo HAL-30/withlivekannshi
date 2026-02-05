@@ -25,6 +25,43 @@ def home():
 def health():
     return "OK", 200
 
+@app.route('/debug')
+def debug_webhook():
+    """Webhook接続をデバッグするエンドポイント"""
+    import json
+    
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
+        return "DISCORD_WEBHOOK_URL not set", 500
+    
+    # シンプルなテストメッセージ
+    payload = {"content": "🔧 デバッグテスト"}
+    
+    try:
+        resp = requests.post(webhook_url, json=payload, timeout=10)
+        
+        # 詳細なレスポンス情報を収集
+        debug_info = {
+            "status_code": resp.status_code,
+            "headers": dict(resp.headers),
+            "body": resp.text[:500] if resp.text else None,
+            "rate_limit_remaining": resp.headers.get("X-RateLimit-Remaining"),
+            "rate_limit_reset_after": resp.headers.get("X-RateLimit-Reset-After"),
+            "retry_after": resp.headers.get("Retry-After"),
+        }
+        
+        # 429の場合、レスポンスボディも解析
+        if resp.status_code == 429:
+            try:
+                debug_info["body_json"] = resp.json()
+            except:
+                pass
+        
+        return f"<pre>{json.dumps(debug_info, indent=2, ensure_ascii=False)}</pre>", resp.status_code
+        
+    except Exception as e:
+        return f"Error: {str(e)}", 500
+
 last_test_time = {}  # 重複リクエスト防止用
 
 @app.route('/test')
