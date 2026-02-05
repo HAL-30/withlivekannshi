@@ -235,7 +235,7 @@ class WithLiveMonitor:
         except Exception:
             return time_str
 
-    def send_discord_with_retry(self, payload, max_retries=3):
+    def send_discord_with_retry(self, payload, max_retries=5):
         """Discord Webhookにリトライ機能付きで送信（429エラー対応）"""
         for attempt in range(max_retries):
             try:
@@ -247,15 +247,20 @@ class WithLiveMonitor:
                 
                 # レート制限（429）
                 if resp.status_code == 429:
-                    retry_after = resp.headers.get('Retry-After', '5')
+                    # レスポンスボディからretry_afterを取得（より正確）
                     try:
-                        wait_time = float(retry_after)
-                    except ValueError:
-                        wait_time = 5.0
+                        data = resp.json()
+                        wait_time = float(data.get('retry_after', 5))
+                    except Exception:
+                        retry_after = resp.headers.get('Retry-After', '5')
+                        try:
+                            wait_time = float(retry_after)
+                        except ValueError:
+                            wait_time = 5.0
                     
-                    # 最大30秒まで待機
-                    wait_time = min(wait_time, 30.0)
-                    self.log(f"⚠️ レート制限検出 - {wait_time}秒後にリトライ ({attempt + 1}/{max_retries})")
+                    # 最低5秒、最大120秒まで待機（Discordの要求を尊重）
+                    wait_time = max(5.0, min(wait_time + 1, 120.0))
+                    self.log(f"⚠️ レート制限検出 - {wait_time:.1f}秒後にリトライ ({attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                     continue
                 
@@ -265,7 +270,7 @@ class WithLiveMonitor:
                 
             except requests.exceptions.HTTPError as e:
                 if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2  # 指数バックオフ: 2秒, 4秒...
+                    wait_time = (attempt + 1) * 5  # 指数バックオフ: 5秒, 10秒, 15秒...
                     self.log(f"⚠️ Discord送信失敗 - {wait_time}秒後にリトライ ({attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
@@ -283,7 +288,7 @@ class WithLiveMonitor:
             "description": f"**{artist['name']}**",
             "color": 0x00ff00,
             "fields": [],
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "footer": {"text": "WithLIVE Monitor"}
         }
         for slot in new_slots[:10]:
