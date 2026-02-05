@@ -25,31 +25,40 @@ def home():
 def health():
     return "OK", 200
 
+last_test_time = {}  # 重複リクエスト防止用
+
 @app.route('/test')
 def test_notification():
     """テスト通知を送信するエンドポイント"""
-    global monitor_instance
+    global monitor_instance, last_test_time
+    
     if monitor_instance is None:
         return "Monitor not initialized", 500
     
+    # 重複リクエスト防止（10秒以内の連続アクセスを無視）
+    now = time.time()
+    if 'last' in last_test_time and now - last_test_time['last'] < 10:
+        return "⚠️ 連続アクセス防止: 10秒以内に再度アクセスしました。少し待ってからお試しください。", 429
+    last_test_time['last'] = now
+    
     # 優先アーティストでテスト通知を送信
     artist = monitor_instance.priority_artist
-    now = datetime.now(JST)
+    now_dt = datetime.now(JST)
     test_slots = [
         {
             'id': 'test_001',
-            'date': now.strftime('%Y%m%d'),
+            'date': now_dt.strftime('%Y%m%d'),
             'time': '12:00:00',
             'points': '1000',
-            'start_day': f"{now.month}月{now.day}日",
+            'start_day': f"{now_dt.month}月{now_dt.day}日",
             'duration': '2',
         },
         {
             'id': 'test_002',
-            'date': now.strftime('%Y%m%d'),
+            'date': now_dt.strftime('%Y%m%d'),
             'time': '15:30:00',
             'points': '3000',
-            'start_day': f"{now.month}月{now.day}日",
+            'start_day': f"{now_dt.month}月{now_dt.day}日",
             'duration': '3',
         }
     ]
