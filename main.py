@@ -35,10 +35,11 @@ def test_notification():
     if monitor_instance is None:
         return "Monitor not initialized", 500
     
-    # 重複リクエスト防止（10秒以内の連続アクセスを無視）
+    # 重複リクエスト防止（30秒以内の連続アクセスを無視）- Discord レート制限対策
     now = time.time()
-    if 'last' in last_test_time and now - last_test_time['last'] < 10:
-        return "⚠️ 連続アクセス防止: 10秒以内に再度アクセスしました。少し待ってからお試しください。", 429
+    if 'last' in last_test_time and now - last_test_time['last'] < 30:
+        remaining = int(30 - (now - last_test_time['last']))
+        return f"⚠️ 連続アクセス防止: あと{remaining}秒待ってからお試しください。（Discordレート制限対策）", 429
     last_test_time['last'] = now
     
     # 優先アーティストでテスト通知を送信
@@ -234,6 +235,46 @@ class WithLiveMonitor:
         except Exception:
             return time_str
 
+    def send_discord_with_retry(self, payload, max_retries=3):
+        """Discord Webhookにリトライ機能付きで送信（429エラー対応）"""
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(self.discord_webhook_url, json=payload, timeout=10)
+                
+                # 成功
+                if resp.status_code in [200, 204]:
+                    return True, None
+                
+                # レート制限（429）
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get('Retry-After', '5')
+                    try:
+                        wait_time = float(retry_after)
+                    except ValueError:
+                        wait_time = 5.0
+                    
+                    # 最大30秒まで待機
+                    wait_time = min(wait_time, 30.0)
+                    self.log(f"⚠️ レート制限検出 - {wait_time}秒後にリトライ ({attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                
+                # その他のエラー
+                resp.raise_for_status()
+                return True, None
+                
+            except requests.exceptions.HTTPError as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # 指数バックオフ: 2秒, 4秒...
+                    self.log(f"⚠️ Discord送信失敗 - {wait_time}秒後にリトライ ({attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    return False, str(e)
+            except Exception as e:
+                return False, str(e)
+        
+        return False, "最大リトライ回数に達しました"
+
     def send_discord_notification(self, artist, new_slots):
         if not new_slots:
             return
@@ -274,12 +315,11 @@ class WithLiveMonitor:
         message = artist.get('message', f"{artist['name']}から着信がありました！")
         payload = {"content": message, "embeds": [embed]}
         
-        try:
-            resp = requests.post(self.discord_webhook_url, json=payload, timeout=10)
-            resp.raise_for_status()
+        success, error = self.send_discord_with_retry(payload)
+        if success:
             self.log(f"✅ Discord通知送信完了: {artist['name']} ({len(new_slots)}件)")
-        except Exception as e:
-            self.log(f"❌ Discord送信エラー: {e}")
+        else:
+            self.log(f"❌ Discord送信エラー: {error}")
 
     def send_error_notification(self, message):
         payload = {
@@ -290,10 +330,7 @@ class WithLiveMonitor:
                 "timestamp": datetime.utcnow().isoformat()
             }]
         }
-        try:
-            requests.post(self.discord_webhook_url, json=payload, timeout=10)
-        except Exception:
-            pass
+        self.send_discord_with_retry(payload, max_retries=2)
 
     def send_startup_notification(self):
         all_artists = [self.priority_artist] + self.normal_artists
@@ -311,13 +348,12 @@ class WithLiveMonitor:
                 ]
             }]
         }
-        try:
-            resp = requests.post(self.discord_webhook_url, json=payload, timeout=10)
-            resp.raise_for_status()
+        success, error = self.send_discord_with_retry(payload)
+        if success:
             self.log("✅ 起動通知送信完了")
             return True
-        except Exception as e:
-            self.log(f"❌ 起動通知エラー: {e}")
+        else:
+            self.log(f"❌ 起動通知エラー: {error}")
             return False
 
     def check_artist(self, artist):
