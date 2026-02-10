@@ -25,87 +25,6 @@ def home():
 def health():
     return "OK", 200
 
-@app.route('/debug')
-def debug_webhook():
-    """Webhook接続をデバッグするエンドポイント"""
-    import json
-    
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
-    if not webhook_url:
-        return "DISCORD_WEBHOOK_URL not set", 500
-    
-    # シンプルなテストメッセージ
-    payload = {"content": "🔧 デバッグテスト"}
-    
-    try:
-        resp = requests.post(webhook_url, json=payload, timeout=10)
-        
-        # 詳細なレスポンス情報を収集
-        debug_info = {
-            "status_code": resp.status_code,
-            "headers": dict(resp.headers),
-            "body": resp.text[:500] if resp.text else None,
-            "rate_limit_remaining": resp.headers.get("X-RateLimit-Remaining"),
-            "rate_limit_reset_after": resp.headers.get("X-RateLimit-Reset-After"),
-            "retry_after": resp.headers.get("Retry-After"),
-        }
-        
-        # 429の場合、レスポンスボディも解析
-        if resp.status_code == 429:
-            try:
-                debug_info["body_json"] = resp.json()
-            except:
-                pass
-        
-        return f"<pre>{json.dumps(debug_info, indent=2, ensure_ascii=False)}</pre>", resp.status_code
-        
-    except Exception as e:
-        return f"Error: {str(e)}", 500
-
-last_test_time = {}  # 重複リクエスト防止用
-
-@app.route('/test')
-def test_notification():
-    """テスト通知を送信するエンドポイント"""
-    global monitor_instance, last_test_time
-    
-    if monitor_instance is None:
-        return "Monitor not initialized", 500
-    
-    # 重複リクエスト防止（30秒以内の連続アクセスを無視）- Discord レート制限対策
-    now = time.time()
-    if 'last' in last_test_time and now - last_test_time['last'] < 30:
-        remaining = int(30 - (now - last_test_time['last']))
-        return f"⚠️ 連続アクセス防止: あと{remaining}秒待ってからお試しください。（Discordレート制限対策）", 429
-    last_test_time['last'] = now
-    
-    # 優先アーティストでテスト通知を送信
-    artist = monitor_instance.priority_artist
-    now_dt = datetime.now(JST)
-    test_slots = [
-        {
-            'id': 'test_001',
-            'date': now_dt.strftime('%Y%m%d'),
-            'time': '12:00:00',
-            'points': '1000',
-            'start_day': f"{now_dt.month}月{now_dt.day}日",
-            'duration': '2',
-        },
-        {
-            'id': 'test_002',
-            'date': now_dt.strftime('%Y%m%d'),
-            'time': '15:30:00',
-            'points': '3000',
-            'start_day': f"{now_dt.month}月{now_dt.day}日",
-            'duration': '3',
-        }
-    ]
-    
-    try:
-        monitor_instance.send_discord_notification(artist, test_slots)
-        return f"✅ テスト通知を送信しました！（{artist['name']}）Discordを確認してください。", 200
-    except Exception as e:
-        return f"❌ エラー: {e}", 500
 
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
@@ -214,8 +133,6 @@ class WithLiveMonitor:
         if not ok_all:
             self.consecutive_failures[cast_id] += 1
             self.log(f"⚠️ {artist['name']}: 取得失敗 (連続{self.consecutive_failures[cast_id]}回)")
-            if self.consecutive_failures[cast_id] == 10:
-                self.send_error_notification(f"{artist['name']}の取得失敗が10回連続しています。")
             return []
 
         self.consecutive_failures[cast_id] = 0
@@ -363,16 +280,6 @@ class WithLiveMonitor:
         else:
             self.log(f"❌ Discord送信エラー: {error}")
 
-    def send_error_notification(self, message):
-        payload = {
-            "embeds": [{
-                "title": "⚠️ WithLIVE Monitor 警告",
-                "description": message,
-                "color": 0xff0000,
-                "timestamp": datetime.utcnow().isoformat()
-            }]
-        }
-        self.send_discord_with_retry(payload, max_retries=2)
 
     def send_startup_notification(self):
         all_artists = [self.priority_artist] + self.normal_artists
