@@ -1,3 +1,3 @@
-requests
-beautifulsoup4
-flask
+# OCI Micro版: 外部ライブラリ不要（標準ライブラリのみ）
+# requests, flask, beautifulsoup4 は削除済み
+# urllib (標準) で全てのHTTP通信を処理

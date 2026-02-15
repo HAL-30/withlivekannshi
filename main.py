@@ -1,10 +1,23 @@
-import requests
+#!/usr/bin/env python3
+"""
+WithLIVE 電話枠監視システム (OCI Micro 最適化版)
+
+OCI VM.Standard.E2.1.Micro (1GB RAM) 向けに最適化
+- Flask削除（常時稼働VMなのでUptimeRobot不要）
+- 最小メモリフットプリント（約20-30MB）
+- systemd連携（ログはjournaldへ）
+- graceful shutdown対応
+"""
+
+import json
+import signal
+import sys
 import time
 import os
-import sys
 from datetime import datetime, timedelta, timezone
-from threading import Thread
-from flask import Flask
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 
 # ========== JST ==========
 try:
@@ -13,19 +26,51 @@ try:
 except Exception:
     JST = timezone(timedelta(hours=9))
 
-# ========== Flaskサーバー ==========
-app = Flask(__name__)
+# ========== Graceful Shutdown ==========
+running = True
 
-@app.route('/')
-def home():
-    return "WithLIVE Monitor is running!"
+def shutdown_handler(signum, frame):
+    global running
+    log("シャットダウンシグナル受信")
+    running = False
 
-@app.route('/health')
-def health():
-    return "OK", 200
+signal.signal(signal.SIGTERM, shutdown_handler)
+signal.signal(signal.SIGINT, shutdown_handler)
 
-def run_web():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+# ========== ログ ==========
+def log(message):
+    timestamp = datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{timestamp}] {message}", flush=True)
+
+# ========== HTTP ヘルパー (urllib のみ、requests不要) ==========
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+
+def http_get_json(url, timeout=30):
+    """URLからJSONを取得（標準ライブラリのみ）"""
+    req = Request(url, headers={'User-Agent': USER_AGENT})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8')), True
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as e:
+        log(f"HTTP取得エラー: {e}")
+        return None, False
+
+def http_post_json(url, data, timeout=10):
+    """URLにJSONをPOST（標準ライブラリのみ）"""
+    payload = json.dumps(data).encode('utf-8')
+    req = Request(url, data=payload, headers={
+        'Content-Type': 'application/json',
+        'User-Agent': USER_AGENT
+    })
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return resp.status, True
+    except HTTPError as e:
+        log(f"HTTP POST エラー: {e.code} {e.reason}")
+        return e.code, False
+    except (URLError, TimeoutError) as e:
+        log(f"HTTP POST 接続エラー: {e}")
+        return 0, False
 
 # ========== 監視クラス ==========
 class WithLiveMonitor:
@@ -36,52 +81,32 @@ class WithLiveMonitor:
         self.priority_artist = priority_artist
         self.normal_artists = normal_artists
         self.days_ahead = days_ahead
-        
+
+        # 各アーティストの既知スロットID
         self.previous_slots = {}
         self.baseline_ready = {}
-        
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-
-    def log(self, message):
-        timestamp = datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')
-        print(f"[{timestamp}] {message}", flush=True)
 
     def get_check_dates(self):
-        dates = []
         today = datetime.now(JST)
-        for i in range(self.days_ahead):
-            date = today + timedelta(days=i)
-            dates.append(date.strftime('%Y%m%d'))
-        return dates
+        return [(today + timedelta(days=i)).strftime('%Y%m%d') for i in range(self.days_ahead)]
 
     def fetch_slots_for_date(self, cast_id, date_str):
         url = f"{self.API_BASE}/talk/cast/{cast_id}?status=progress_draft&date={date_str}&is_web=true"
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-
-            result = data.get('result', [])
-            slots = []
-            for item in result:
-                slot = {
-                    'id': str(item.get('talk_id', '')),
-                    'date': date_str,
-                    'time': item.get('start_time', ''),
-                    'points': str(item.get('point', item.get('current_price', 0))),
-                    'start_day': item.get('start_day', ''),
-                    'duration': str(item.get('duration', '')),
-                }
-                slots.append(slot)
-
-            return slots, True
-
-        except Exception as e:
-            self.log(f"取得エラー ({cast_id[:8]}...): {e}")
+        data, ok = http_get_json(url)
+        if not ok or data is None:
             return None, False
+
+        slots = []
+        for item in data.get('result', []):
+            slots.append({
+                'id': str(item.get('talk_id', '')),
+                'date': date_str,
+                'time': item.get('start_time', ''),
+                'points': str(item.get('point', item.get('current_price', 0))),
+                'start_day': item.get('start_day', ''),
+                'duration': str(item.get('duration', '')),
+            })
+        return slots, True
 
     def fetch_all_slots_for_artist(self, cast_id):
         dates = self.get_check_dates()
@@ -100,13 +125,13 @@ class WithLiveMonitor:
 
     def detect_new_slots(self, artist, current_slots, ok_all):
         cast_id = artist['cast_id']
-        
+
         if cast_id not in self.previous_slots:
             self.previous_slots[cast_id] = set()
             self.baseline_ready[cast_id] = False
 
         if not ok_all:
-            self.log(f"{artist['name']}: 取得失敗")
+            log(f"{artist['name']}: 取得失敗")
             return []
 
         current_ids = {slot['id'] for slot in current_slots}
@@ -114,7 +139,7 @@ class WithLiveMonitor:
         if not self.baseline_ready[cast_id]:
             self.previous_slots[cast_id] = current_ids
             self.baseline_ready[cast_id] = True
-            self.log(f"{artist['name']}: ベースライン確立 (既存枠: {len(current_ids)}件)")
+            log(f"{artist['name']}: ベースライン確立 (既存枠: {len(current_ids)}件)")
             return []
 
         new_ids = current_ids - self.previous_slots[cast_id]
@@ -132,7 +157,7 @@ class WithLiveMonitor:
             return f"{dt.month}月{dt.day}日"
         except Exception:
             return date_str
-    
+
     def format_start_day(self, start_day):
         if not start_day:
             return ""
@@ -158,7 +183,7 @@ class WithLiveMonitor:
     def send_discord_notification(self, artist, new_slots):
         if not new_slots:
             return
-            
+
         embed = {
             "title": "🎉 電話がきたよ！",
             "description": f"**{artist['name']}**",
@@ -166,14 +191,14 @@ class WithLiveMonitor:
             "fields": [],
             "footer": {"text": "WithLIVE Monitor"}
         }
-        
+
         for slot in new_slots[:10]:
             start_day = slot.get('start_day', '')
             date_display = self.format_start_day(start_day) if start_day else self.format_date(slot['date'])
             time_display = self.format_time(slot.get('time', ''))
             duration = slot.get('duration', '')
             duration_text = f" 〜 {duration}分" if duration else ""
-            
+
             embed["fields"].append({
                 "name": f"📅 {date_display}",
                 "value": f"**{time_display}{duration_text}**",
@@ -184,87 +209,102 @@ class WithLiveMonitor:
                 "value": "━━━━━━━━━━━━━━━",
                 "inline": False
             })
-            
+
         embed["fields"].append({
             "name": "📱 今すぐ予約する",
             "value": f"[WithLIVEで予約](https://www.withlive.jp/cast.php?id={artist['cast_id']})",
             "inline": False
         })
-        
+
         message = artist.get('message', f"{artist['name']}から着信がありました！")
         payload = {"content": message, "embeds": [embed]}
-        
-        try:
-            resp = requests.post(self.discord_webhook_url, json=payload, timeout=10)
-            resp.raise_for_status()
-            self.log(f"Discord通知送信完了: {artist['name']} ({len(new_slots)}件)")
-        except Exception as e:
-            self.log(f"Discord送信エラー: {e}")
+
+        status, ok = http_post_json(self.discord_webhook_url, payload)
+        if ok:
+            log(f"Discord通知送信完了: {artist['name']} ({len(new_slots)}件)")
+        else:
+            log(f"Discord送信エラー: ステータス {status}")
 
     def send_startup_notification(self):
         all_artists = [self.priority_artist] + self.normal_artists
         artist_list = "\n".join([f"・{a['name']}" for a in all_artists])
-        
+
         payload = {
             "content": "🔔 WithLIVE Monitor 起動しました",
             "embeds": [{
                 "title": "監視開始",
-                "description": f"**監視対象:**\n{artist_list}",
+                "description": f"**監視対象:**\n{artist_list}\n\n**サーバー:** OCI Tokyo",
                 "color": 0x0099ff,
             }]
         }
-        
-        try:
-            resp = requests.post(self.discord_webhook_url, json=payload, timeout=10)
-            resp.raise_for_status()
-            self.log("起動通知送信完了")
-        except Exception as e:
-            self.log(f"起動通知エラー: {e}")
+
+        status, ok = http_post_json(self.discord_webhook_url, payload)
+        if ok:
+            log("起動通知送信完了")
+        else:
+            log(f"起動通知エラー: ステータス {status}")
 
     def check_artist(self, artist):
         slots, ok = self.fetch_all_slots_for_artist(artist['cast_id'])
         new_slots = self.detect_new_slots(artist, slots, ok)
-        
+
         if new_slots:
-            self.log(f"{artist['name']}: 新規枠検出 {len(new_slots)}件")
+            log(f"{artist['name']}: 新規枠検出 {len(new_slots)}件")
             self.send_discord_notification(artist, new_slots)
             return True
         return False
 
     def initialize(self):
-        self.log("初期化中...")
+        log("初期化中...")
         self.check_artist(self.priority_artist)
         for artist in self.normal_artists:
             self.check_artist(artist)
             time.sleep(0.5)
-        self.log("初期化完了")
+        log("初期化完了")
 
     def run(self):
-        self.log("=== WithLIVE Monitor 起動 ===")
+        global running
+
+        log("=== WithLIVE Monitor 起動 (OCI Micro版) ===")
         self.send_startup_notification()
         self.initialize()
-        self.log("監視開始")
+        log("監視開始")
 
         cycle = 0
-        while True:
+        while running:
+            # 30秒待機（1秒刻みでシャットダウンチェック）
+            for _ in range(30):
+                if not running:
+                    break
+                time.sleep(1)
+
+            if not running:
+                break
+
+            cycle += 1
+
             try:
-                time.sleep(30)
-                cycle += 1
-                
+                # 澪・モンスター: 毎サイクル（30秒間隔）
                 found = self.check_artist(self.priority_artist)
                 if not found:
-                    self.log(f"{self.priority_artist['name']}: 新規枠なし")
-                
+                    log(f"{self.priority_artist['name']}: 新規枠なし")
+
+                # その他: 2サイクルごと（60秒間隔）
                 if cycle % 2 == 0:
                     for artist in self.normal_artists:
+                        if not running:
+                            break
                         found = self.check_artist(artist)
                         if not found:
-                            self.log(f"{artist['name']}: 新規枠なし")
+                            log(f"{artist['name']}: 新規枠なし")
                         time.sleep(0.5)
-                        
+
             except Exception as e:
-                self.log(f"エラー: {e}")
+                log(f"エラー: {e}")
                 time.sleep(10)
+
+        log("=== WithLIVE Monitor 停止 ===")
+
 
 # ========== アーティスト設定 ==========
 PRIORITY_ARTIST = {
@@ -297,13 +337,9 @@ if __name__ == "__main__":
     if not discord_webhook_url:
         print("エラー: DISCORD_WEBHOOK_URL が設定されていません", flush=True)
         sys.exit(1)
-    
+
     days_ahead = int(os.environ.get("DAYS_AHEAD", 2))
-    
-    web_thread = Thread(target=run_web)
-    web_thread.daemon = True
-    web_thread.start()
-    
+
     monitor = WithLiveMonitor(
         discord_webhook_url=discord_webhook_url,
         priority_artist=PRIORITY_ARTIST,

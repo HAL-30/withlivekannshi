@@ -1,0 +1,25 @@
+[Unit]
+Description=WithLIVE Phone Slot Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/home/opc/withlivekannshi
+ExecStart=/usr/bin/python3 /home/opc/withlivekannshi/main.py
+EnvironmentFile=/home/opc/withlivekannshi/.env
+Restart=always
+RestartSec=10
+
+# メモリ制限（安全策: 200MB超えたら再起動）
+MemoryMax=200M
+MemoryHigh=150M
+
+# ログ設定
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=withlive-monitor
+
+[Install]
+WantedBy=multi-user.target
