@@ -1,3 +1,6 @@
+# Render設定（非推奨: OCI移行済み）
+# このファイルはRenderで運用していた時の設定です
+# 現在はOCI VM.Standard.E2.1.Micro で稼働しています
 services:
   - type: web
     name: withlive-monitor
@@ -7,11 +10,5 @@ services:
     envVars:
       - key: DISCORD_WEBHOOK_URL
         sync: false
-      - key: CAST_ID
-        sync: false
-      - key: ARTIST_NAME
-        sync: false
-      - key: CHECK_INTERVAL
-        value: 60
       - key: DAYS_AHEAD
         value: 2
