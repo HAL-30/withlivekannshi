@@ -48,12 +48,8 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 def http_get_json(url, timeout=30):
     """URLからJSONを取得（標準ライブラリのみ）"""
     req = Request(url, headers={'User-Agent': USER_AGENT})
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode('utf-8')), True
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as e:
-        log(f"HTTP取得エラー: {e}")
-        return None, False
+    with urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode('utf-8'))
 
 def http_post_json(url, data, timeout=10):
     """URLにJSONをPOST（標準ライブラリのみ）"""
@@ -84,7 +80,6 @@ class WithLiveMonitor:
 
         # 各アーティストの既知スロットID
         self.previous_slots = {}
-        self.baseline_ready = {}
 
     def get_check_dates(self):
         today = datetime.now(JST)
@@ -92,12 +87,13 @@ class WithLiveMonitor:
 
     def fetch_slots_for_date(self, cast_id, date_str):
         url = f"{self.API_BASE}/talk/cast/{cast_id}?status=progress_draft&date={date_str}&is_web=true"
-        data, ok = http_get_json(url)
-        if not ok or data is None:
-            return None, False
+        data = http_get_json(url)
+        items = data.get('result') if isinstance(data, dict) else None
+        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+            raise ValueError("枠一覧のレスポンス形式が不正です")
 
         slots = []
-        for item in data.get('result', []):
+        for item in items:
             slots.append({
                 'id': str(item.get('talk_id', '')),
                 'date': date_str,
@@ -106,39 +102,32 @@ class WithLiveMonitor:
                 'start_day': item.get('start_day', ''),
                 'duration': str(item.get('duration', '')),
             })
-        return slots, True
+        return slots
 
-    def fetch_all_slots_for_artist(self, cast_id):
+    def fetch_all_slots_for_artist(self, artist):
         dates = self.get_check_dates()
         all_slots = []
         ok_all = True
 
         for date_str in dates:
-            slots, ok = self.fetch_slots_for_date(cast_id, date_str)
-            if not ok:
+            try:
+                all_slots.extend(self.fetch_slots_for_date(artist['cast_id'], date_str))
+            except (URLError, TimeoutError, ValueError) as error:
                 ok_all = False
-            else:
-                all_slots.extend(slots)
+                detail = str(error)
+                if isinstance(error, HTTPError):
+                    detail = f"HTTP {error.code} {error.reason}"
+                log(f"{artist['name']}: 取得失敗 ({date_str}): {detail}")
             time.sleep(0.3)
 
         return all_slots, ok_all
 
-    def detect_new_slots(self, artist, current_slots, ok_all):
+    def detect_new_slots(self, artist, current_slots):
         cast_id = artist['cast_id']
-
-        if cast_id not in self.previous_slots:
-            self.previous_slots[cast_id] = set()
-            self.baseline_ready[cast_id] = False
-
-        if not ok_all:
-            log(f"{artist['name']}: 取得失敗")
-            return []
-
         current_ids = {slot['id'] for slot in current_slots}
 
-        if not self.baseline_ready[cast_id]:
+        if cast_id not in self.previous_slots:
             self.previous_slots[cast_id] = current_ids
-            self.baseline_ready[cast_id] = True
             log(f"{artist['name']}: ベースライン確立 (既存枠: {len(current_ids)}件)")
             return []
 
@@ -146,6 +135,7 @@ class WithLiveMonitor:
         self.previous_slots[cast_id] = current_ids
 
         if not new_ids:
+            log(f"{artist['name']}: 新規枠なし")
             return []
 
         by_id = {slot['id']: slot for slot in current_slots}
@@ -245,14 +235,14 @@ class WithLiveMonitor:
             log(f"起動通知エラー: ステータス {status}")
 
     def check_artist(self, artist):
-        slots, ok = self.fetch_all_slots_for_artist(artist['cast_id'])
-        new_slots = self.detect_new_slots(artist, slots, ok)
+        slots, ok = self.fetch_all_slots_for_artist(artist)
+        if not ok:
+            return
 
+        new_slots = self.detect_new_slots(artist, slots)
         if new_slots:
             log(f"{artist['name']}: 新規枠検出 {len(new_slots)}件")
             self.send_discord_notification(artist, new_slots)
-            return True
-        return False
 
     def initialize(self):
         log("初期化中...")
@@ -285,18 +275,14 @@ class WithLiveMonitor:
 
             try:
                 # 澪・モンスター: 毎サイクル（30秒間隔）
-                found = self.check_artist(self.priority_artist)
-                if not found:
-                    log(f"{self.priority_artist['name']}: 新規枠なし")
+                self.check_artist(self.priority_artist)
 
                 # その他: 2サイクルごと（60秒間隔）
                 if cycle % 2 == 0:
                     for artist in self.normal_artists:
                         if not running:
                             break
-                        found = self.check_artist(artist)
-                        if not found:
-                            log(f"{artist['name']}: 新規枠なし")
+                        self.check_artist(artist)
                         time.sleep(0.5)
 
             except Exception as e:
